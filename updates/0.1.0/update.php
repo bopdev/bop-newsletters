@@ -20,11 +20,11 @@ $sql = "CREATE TABLE {$wpdb->bop_newsletters_subscribers} (
   user_id bigint(20) unsigned NOT NULL default '0',
   created datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   email varchar(255) NOT NULL default '',
-  group varchar(42) default 'default',
+  group_id varchar(42) default 'default',
   status varchar(63) default 'subscribed',
   PRIMARY KEY  (subscriber_id),
   KEY user_id (user_id),
-  KEY group (group),
+  KEY group_id (group_id),
   KEY status (status)
 ) $charset_collate;";
 

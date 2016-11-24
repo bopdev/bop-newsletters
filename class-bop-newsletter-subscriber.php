@@ -5,7 +5,7 @@ defined( 'ABSPATH' ) || die( 'Our survey says: ... X.' );
 
 if( ! class_exists( 'Bop_Newsletter_Subscriber' ) ):
 
-class Bop_Newsletter_Subscriber{
+class Bop_Newsletter_Subscriber implements JSONSerializable{
   
   public $id = 0;
   
@@ -15,7 +15,7 @@ class Bop_Newsletter_Subscriber{
   
   public $email;
   
-  public $group = 'default';
+  public $group_id = 'default';
   
   public $status = '';
   
@@ -24,7 +24,7 @@ class Bop_Newsletter_Subscriber{
       if( is_array( $id_or_data ) || is_object( $id_or_data ) ){
         $this->fill_object( (array)$id_or_data );
       }else{
-        $this->load( $id );
+        $this->load( $id_or_data );
       }
     }
     return $this;
@@ -38,7 +38,7 @@ class Bop_Newsletter_Subscriber{
   
   public function fill_object( $data ){
     if( isset( $data['id'] ) ){
-      $this->id = $data['id'];
+      $this->id = (int)$data['id'];
     }
     
     $user = false;
@@ -56,14 +56,14 @@ class Bop_Newsletter_Subscriber{
       }
     }
     
-    if( isset( $data['email'] ) ){
+    if( isset( $data['email'] ) && is_email( $data['email'] ) ){
       $this->email = $data['email'];
     }elseif( $user ){
       $this->email = $user->user_email;
     }
     
-    if( isset( $data['group'] ) ){
-      $this->group = $data['group'];
+    if( isset( $data['group_id'] ) && bop_newsletters_group_exists( $data['group_id'] ) !== false ){
+      $this->group_id = $data['group_id'];
     }
     
     if( isset( $data['status'] ) ){
@@ -78,10 +78,10 @@ class Bop_Newsletter_Subscriber{
     $fields = $wpdb->get_row(
       $wpdb->prepare(
         "SELECT t.subscriber_id AS id,
-          t.user_id AS user_id
+          t.user_id AS user_id,
           t.created AS created,
           t.email AS email,
-          t.group AS group,
+          t.group_id AS group_id,
           t.status AS status
         FROM {$wpdb->bop_newsletters_subscribers} AS t
         WHERE t.subscriber_id = %d
@@ -120,9 +120,15 @@ class Bop_Newsletter_Subscriber{
     global $wpdb;
     
     if( ! $this->email )
-      return false;
+      return new WP_Error( 'BOP_NEWSLETTERS_ERR_NO_EMAIL', __( 'The subscriber does not have an email.', 'bop_newsletters' ) );
+      
+    $insert_fields = ['user_id'=>$this->user_id, 'email'=>$this->email, 'group_id'=>$this->group_id];
     
-    $insert_fields = ['user_id'=>$this->user_id, 'email'=>$this->email, 'group'=>$this->group, 'status'=>$this->status];
+    if( $sub = self::subscriber_exists( $insert_fields ) ){
+      return $sub->fill_object( ['status'=>$this->status] )->update();
+    }
+    
+    $insert_fields['status'] = $this->status;
     
     $formats = ['%d', '%s', '%s', '%s'];
     
@@ -135,9 +141,9 @@ class Bop_Newsletter_Subscriber{
     global $wpdb;
     
     if( ! $this->id )
-      return false;
+      return new WP_Error( 'BOP_NEWSLETTERS_ERR_SUB_NOT_EXISTS', __( 'The subscriber does not exist.', 'bop_newsletters' ) );;
     
-    $update_fields = ['user_id'=>$this->user_id, 'email'=>$this->email, 'group'=>$this->group, 'status'=>$this->status];
+    $update_fields = ['user_id'=>$this->user_id, 'email'=>$this->email, 'group_id'=>$this->group_id, 'status'=>$this->status];
     
     $formats = ['%d', '%s', '%s', '%s'];
     
@@ -147,7 +153,43 @@ class Bop_Newsletter_Subscriber{
   
   public function unsubscribe(){
     $this->fill_object( ['status'=>'unsubscribed'] );
-    $this->update();
+    return $this->update();
+  }
+  
+  public static function subscriber_exists( $data ){
+    global $wpdb;
+    
+    $data = array_intersect_key( $data, ['user_id'=>'', 'email'=>'', 'group_id'=>'', 'status'=>''] );
+    
+    $where = "1=1";
+    foreach( $data as $k=>$v ){
+      if( isset( $data[$k] ) && $v ){
+        $where .= "\n AND t.{$k} = %s";
+      }
+    }
+    
+    $fields = $wpdb->get_row( $wpdb->prepare( 
+        "SELECT t.subscriber_id AS id,
+          t.user_id AS user_id,
+          t.created AS created,
+          t.email AS email,
+          t.group_id AS group_id,
+          t.status AS status
+        FROM {$wpdb->bop_newsletters_subscribers} AS t
+        WHERE {$where}
+        LIMIT 1",
+        $data
+      ),
+      ARRAY_A
+    );
+    
+    return $fields ? new Bop_Newsletter_Subscriber( $fields ) : false;
+  }
+  
+  public function add_notification( $template_id ){
+    $bmn = new Bop_Mail_Notification( ['template_id'=>$template_id, 'to_address'=>$this->email] );
+    $bmn->insert();
+    return $this;
   }
   
   public function get_notifications(){
@@ -176,6 +218,17 @@ class Bop_Newsletter_Subscriber{
     }
     
     return $notifications;
+  }
+  
+  public function jsonSerialize(){
+    $output = new StdClass();
+    $output->id = $this->id;
+    $output->user_id = $this->user_id;
+    $output->created = $this->created;
+    $output->email = $this->email;
+    $output->group_id = $this->group_id;
+    $output->status = $this->status;
+    return apply_filters( 'json_serialize.bop_newsletters', $output, $this );
   }
   
 }

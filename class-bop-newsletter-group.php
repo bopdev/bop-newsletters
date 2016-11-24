@@ -5,9 +5,9 @@ defined( 'ABSPATH' ) || die( 'Our survey says: ... X.' );
 
 if( ! class_exists( 'Bop_Newsletter_Group' ) ):
 
-class Bop_Newsletter_Group{
+class Bop_Newsletter_Group implements JSONSerializable{
   
-  public $id = 'default';
+  public $id;
   
   public $labels = [];
   
@@ -22,7 +22,7 @@ class Bop_Newsletter_Group{
       if( is_array( $id_or_data ) || is_object( $id_or_data ) ){
         $this->fill_object( (array)$id_or_data );
       }else{
-        $this->load( $id );
+        $this->load( $id_or_data );
       }
     }
     return $this;
@@ -56,20 +56,23 @@ class Bop_Newsletter_Group{
           $subs[] = new Bop_Newsletter_Subscriber( $sub );
         }
       }
+      $this->subscribers = $subs;
     }
   }
   
   protected function _fetch_from_db( $id ){
     $group_definition = get_option( 'bop_newsletter_group_' . $id, false );
     if( $group_definition != false ){
-      $this->fill_object( $group_definition );
+      $this->fill_object( array_merge( $group_definition, ['id'=>$id] ) );
     }
   }
   
   public function parse_subscribers_vars( $vars = [] ){
+    $dummy_subscriber = new Bop_Newsletter_Subscriber( ['group'=>$this->id] );
+    
     $vars['limit'] = isset( $vars['limit'] ) ? $vars['limit'] : 0;
     $vars['offset'] = isset( $vars['offset'] ) ? $vars['offset'] : 0;
-    $vars['status'] = isset( $vars['status'] ) ? (array)$vars['status'] : [$this->get_default_status()];
+    $vars['status'] = isset( $vars['status'] ) ? (array)$vars['status'] : [$dummy_subscriber->get_default_status()];
     $this->parsed_vars = $vars;
     return $vars;
   }
@@ -80,63 +83,75 @@ class Bop_Newsletter_Group{
     $vars = $this->parse_subscribers_vars( $vars );
     
     if( ! $this->subscribers || $vars != $this->parsed_vars ){
-      $sql_pieces = [$this->id];
       $sql = "SELECT t.subscriber_id AS id,
-        t.user_id AS user_id
+        t.user_id AS user_id,
         t.created AS created,
         t.email AS email,
-        t.group AS group,
+        t.group_id AS group_id,
         t.status AS status
       FROM {$wpdb->bop_newsletters_subscribers} AS t
-      WHERE t.group = %s
-        AND t.status IN (" . implode( ", ", array_fill( 0, count( $vars['status'] ), "%d" ) ) . ")";
+      WHERE t.group_id = %s
+        AND t.status IN (" . implode( ", ", array_fill( 0, count( $vars['status'] ), "%s" ) ) . ")";
       
-      if( $limit > 0 ){
-        $sql_pieces[] = $offset;
-        $sql_pieces[] = $limit;
-        $sql .= "\nLIMIT %d, %d";
+      $sql_pieces = [$this->id];
+      $sql_pieces = array_merge( $sql_pieces, $vars['status'] );
+      
+      if( $vars['limit'] > 0 ){
+        $sql .= "\nLIMIT %d\nOFFSET %d";
+        $sql_pieces[] = $vars['limit'];
+        $sql_pieces[] = $vars['offset'];
       }
       
-      $subs = $wpdb->get_results( $wpdb->prepare( $sql, $sql_pieces ) );
-      $this->fill_object( $subs );
+      $subs = $wpdb->get_results( $wpdb->prepare( $sql, $sql_pieces ), ARRAY_A );
+      $this->fill_object( ['subscribers'=>$subs] );
     }
     
     return $this->subscribers;
   }
   
   public function insert(){
-    if( $this->id )
-      add_option( 'bop_newsletter_group_' . $this->id, ['labels'=>$this->labels, 'settings'=>$this->settings] );
-      
-    return $this;
+    if( ! $this->id )
+      return false;
+    
+    return add_option( 'bop_newsletter_group_' . $this->id, ['labels'=>$this->labels, 'settings'=>$this->settings] );
   }
   
   public function update(){
-    if( $this->id )
-      update_option( 'bop_newsletter_group_' . $this->id, ['labels'=>$this->labels, 'settings'=>$this->settings] );
-      
-    return $this;
+    if( ! $this->id )
+      return false;
+    
+    return update_option( 'bop_newsletter_group_' . $this->id, ['labels'=>$this->labels, 'settings'=>$this->settings] );
   }
   
   public function delete(){
-    if( $this->id )
-      delete_option( 'bop_newsletter_group_' . $this->id );
-      
-    return $this;
+    if( ! $this->id )
+      return false;
+    
+    return delete_option( 'bop_newsletter_group_' . $this->id );
   }
   
   public function send_email( $template_id ){
     
-    if( ! $group->id || ! $template_id ) return;
+    if( ! $this->id || ! $template_id ) return;
     
     $subs = apply_filters( 'send_email_subscribers.bop_newsletters', $this->get_subscribers(), $template_id, $this );
     
     foreach( $subs as $sub ){
-      $bmn = new Bop_Mail_Notification( ['template_id'=>$template_id, 'to_address'=>$sub->email] );
-      $bmn->insert();
+      $sub->add_notification( $template_id );
     }
   }
   
+  public function get_edit_link(){
+    return apply_filters( 'get_edit_group_link.bop_newsletters', admin_url( 'admin.php?page=bop-newsletter-edit&id=' . $this->id ), $this );
+  }
+  
+  public function jsonSerialize(){
+    $output = new StdClass();
+    $output->id = $this->id;
+    $output->labels = $this->labels;
+    $output->subscribers = $this->subscribers;
+    return apply_filters( 'json_serialize.bop_newsletters', $output, $this );
+  }
 }
 
 endif;
